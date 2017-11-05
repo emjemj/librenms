@@ -20,15 +20,16 @@ function bulk_sensor_snmpget($device, $sensors)
 
 /**
  * @param $device
+ * @param string $type type/class of sensor
  * @return array
  */
-function sensor_precache($device)
+function sensor_precache($device, $type)
 {
-    $sensor_config = array();
+    $sensor_cache = array();
     if (file_exists('includes/polling/sensors/pre-cache/'. $device['os'] .'.inc.php')) {
         include 'includes/polling/sensors/pre-cache/'. $device['os'] .'.inc.php';
     }
-    return $sensor_config;
+    return $sensor_cache;
 }
 
 function poll_sensor($device, $class)
@@ -51,7 +52,7 @@ function poll_sensor($device, $class)
 
     $snmp_data = bulk_sensor_snmpget($device, $sensors);
 
-    $sensor_cache = sensor_precache($device);
+    $sensor_cache = sensor_precache($device, $class);
 
     foreach ($sensors as $sensor) {
         echo 'Checking (' . $sensor['poller_type'] . ") $class " . $sensor['sensor_descr'] . '... '.PHP_EOL;
@@ -141,6 +142,8 @@ function record_sensor_data($device, $all_sensors)
         'signal'      => 'dBm',
         'airflow'     => 'cfm',
         'snr'         => 'SNR',
+        'pressure'    => 'kPa',
+        'cooling'     => 'W',
     );
 
     foreach ($all_sensors as $sensor) {
@@ -256,18 +259,22 @@ function poll_device($device, $options)
         $graphs    = array();
         $oldgraphs = array();
 
-        // we always want the core module to be included
-        include 'includes/polling/core.inc.php';
-
         $force_module = false;
-        if ($options['m']) {
-            $config['poller_modules'] = array();
-            foreach (explode(',', $options['m']) as $module) {
-                if (is_file('includes/polling/'.$module.'.inc.php')) {
-                    $config['poller_modules'][$module] = 1;
-                    $force_module = true;
+        if (!$device['snmp_disable']) {
+            // we always want the core module to be included
+            include 'includes/polling/core.inc.php';
+
+            if ($options['m']) {
+                $config['poller_modules'] = array();
+                foreach (explode(',', $options['m']) as $module) {
+                    if (is_file('includes/polling/'.$module.'.inc.php')) {
+                        $config['poller_modules'][$module] = 1;
+                        $force_module = true;
+                    }
                 }
             }
+        } else {
+            $config['poller_modules'] = array();
         }
         foreach ($config['poller_modules'] as $module => $module_status) {
             $os_module_status = $config['os'][$device['os']]['poller_modules'][$module];

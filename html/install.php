@@ -2,14 +2,20 @@
 session_start();
 if (empty($_POST) && !empty($_SESSION) && !isset($_REQUEST['stage'])) {
     $_POST = $_SESSION;
-} else {
-    $_SESSION = array_replace($_SESSION, $_POST);
+} elseif (!file_exists("../config.php")) {
+    $allowed_vars = array('stage','build-ok','dbhost','dbuser','dbpass','dbname','dbport','dbsocket','add_user','add_pass','add_email');
+    foreach ($allowed_vars as $allowed) {
+        if (isset($_POST[$allowed])) {
+            $_SESSION[$allowed] = $_POST[$allowed];
+        }
+    }
 }
 
 $stage = isset($_POST['stage']) ? $_POST['stage'] : 0;
 
 // Before we do anything, if we see config.php, redirect back to the homepage.
 if (file_exists('../config.php') && $stage != 6) {
+    unset($_SESSION['stage']);
     header("Location: /");
     exit;
 }
@@ -38,7 +44,7 @@ $config['db_port']=$dbport;
 $config['db_socket']=$dbsocket;
 
 if (!empty($config['db_socket'])) {
-    $config['db_host'] = '';
+    $config['db_host'] = 'localhost';
     $config['db_port'] = null;
 } else {
     $config['db_socket'] = null;
@@ -52,7 +58,9 @@ $add_email = @$_POST['add_email'] ?: '';
 // Check we can connect to MySQL DB, if not, back to stage 1 :)
 if ($stage > 1) {
     try {
-        dbConnect();
+        if ($stage != 6) {
+            dbConnect();
+        }
         if ($stage == 2 && $_SESSION['build-ok'] == true) {
             $stage = 3;
             $msg = "It appears that the database is already setup so have moved onto stage $stage";
@@ -73,12 +81,17 @@ if ($stage == 4) {
         $msg = "You haven't entered enough information to add the user account, please check below and re-try";
     }
 } elseif ($stage == 6) {
-    session_destroy();
     // If we get here then let's do some final checks.
     if (!file_exists("../config.php")) {
         // config.php file doesn't exist. go back to that stage
         $msg = "config.php still doesn't exist";
         $stage = 5;
+    } else {
+        // all done, remove all traces of the install session
+        session_unset();
+        session_destroy();
+        setcookie(session_name(), '', 0, '/');
+        session_regenerate_id(true);
     }
 }
 
@@ -133,8 +146,9 @@ if (!empty($msg)) {
 
     <div class="row">
       <div class="col-md-6 col-md-offset-3">
-        <div class="progress progress-striped">
-          <div class="progress-bar progress-bar-success" role="progressbar" aria-valuenow="<?php echo $stage_perc; ?>" aria-valuemin="0" aria-valuemax="100" style="width: <?php echo $stage_perc; ?>%">
+        <div id="install-progress" class="progress progress-striped">
+          <div class="progress-bar progress-bar-success" role="progressbar" aria-valuenow="<?php echo $stage_perc; ?>"
+               aria-valuemin="0" aria-valuemax="100" style="width: <?php echo $stage_perc; ?>%">
             <span class="sr-only"><?php echo $stage_perc; ?>% Complete</span>
           </div>
         </div>
@@ -175,7 +189,7 @@ foreach ($modules as $extension) {
     echo "<tr class='$row_class'><td>PHP module <strong>$extension</strong></td><td>$status</td><td></td></tr>";
 }
 
-if (is_writable(session_save_path())) {
+if (is_writable(session_save_path() === '' ? '/tmp' : session_save_path())) {
     $status = 'yes';
     $row_class = 'success';
 } else {
@@ -203,7 +217,7 @@ echo "</td></tr>";
       <div class="col-md-6 col-md-offset-3">
         <form class="form-inline" role="form" method="post">
           <input type="hidden" name="stage" value="1">
-          <button type="submit" class="btn btn-success" <?php if (!$complete) {
+          <button type="submit" class="btn btn-success pull-right" <?php if (!$complete) {
                 echo "disabled='disabled'";
 } ?>>Next Stage</button>
         </form>
@@ -256,7 +270,7 @@ echo "</td></tr>";
               <input type="text" class="form-control" name="dbname" id="dbname" value="<?php echo $dbname; ?>">
             </div>
           </div>
-          <button type="submit" class="btn btn-success">Next Stage</button>
+          <button type="submit" class="btn btn-success pull-right">Next Stage</button>
         </form>
       </div>
       <div class="col-md-3">
@@ -289,27 +303,36 @@ echo "</td></tr>";
           <input type="hidden" name="dbname" value="<?php echo $dbname; ?>">
           <input type="hidden" name="dbport" value="<?php echo $dbport; ?>">
           <input type="hidden" name="dbsocket" value="<?php echo $dbsocket; ?>">
-          <button type="submit" id="add-user-btn" class="btn btn-success" disabled>Goto Add User</button>
+          <input type="button" id="retry-btn" value="Retry" onClick="window.location.reload()" style="display: none;" class="btn btn-success">
+          <button type="submit" id="add-user-btn" class="btn btn-success pull-right" disabled>Goto Add User</button>
         </form>
       </div>
       <div class="col-md-3">
       </div>
     </div>
     <script type="text/javascript">
-        output = document.getElementById("db-update");
+        var output = document.getElementById("db-update");
         xhr = new XMLHttpRequest();
         xhr.open("GET", "ajax_output.php?id=db-update", true);
         xhr.onprogress = function (e) {
             output.innerHTML = e.currentTarget.responseText;
             output.scrollTop = output.scrollHeight - output.clientHeight; // scrolls the output area
         };
+        xhr.timeout = 90000; // if no response for 90s, allow the user to retry
+        xhr.ontimeout = function (e) {
+            $("#retry-btn").css("display", "");
+        };
         xhr.onreadystatechange = function () {
-            if (xhr.readyState === 4) {
-                console.log("Complete");
-                document.getElementById("add-user-btn").removeAttribute('disabled');
+            if (xhr.readyState === XMLHttpRequest.DONE) {
+                if (xhr.status === 200) {
+                    console.log("Complete");
+                    $('#add-user-btn').removeAttr('disabled');
+                }
+                $('#install-progress').removeClass('active')
             }
         };
         xhr.send();
+        $('#install-progress').addClass('active')
     </script>
 <?php
 } elseif ($stage == "5") {
@@ -392,7 +415,7 @@ if (!file_exists("../config.php")) {
           <input type="hidden" name="dbpass" value="<?php echo $dbpass; ?>">
           <input type="hidden" name="dbname" value="<?php echo $dbname; ?>">
           <input type="hidden" name="dbsocket" value="<?php echo $dbsocket; ?>">
-        <button type="submit" class="btn btn-success">Finish install</button>
+        <button type="submit" class="btn btn-success pull-right">Finish install</button>
       </form>
 <?php
 
@@ -433,7 +456,7 @@ if (!file_exists("../config.php")) {
               <input type="email" class="form-control" name="add_email" id="add_email" value="<?php echo $add_email; ?>">
             </div>
           </div>
-          <button type="submit" class="btn btn-success">Add User</button>
+          <button type="submit" class="btn btn-success pull-right">Add User</button>
         </form>
       </div>
       <div class="col-md-3">
@@ -471,7 +494,7 @@ if (auth_usermanagement()) {
           <input type="hidden" name="dbpass" value="<?php echo $dbpass; ?>">
           <input type="hidden" name="dbname" value="<?php echo $dbname; ?>">
           <input type="hidden" name="dbsocket" value="<?php echo $dbsocket; ?>">
-          <button type="submit" class="btn btn-success" <?php if ($proceed == "1") {
+          <button type="submit" class="btn btn-success pull-right" <?php if ($proceed == "1") {
                 echo "disabled='disabled'";
 } ?>>Generate Config</button>
         </form>
@@ -484,16 +507,19 @@ if (auth_usermanagement()) {
 ?>
     <div class="row">
         <div class="col-md-offset-3 col-md-6">
-            <div class="alert alert-danger">You haven't quite finished yet - please go back to the install docs and carry on the necessary steps to finish the setup!</div>
+            <div class="alert alert-danger">
+                <p>You haven't quite finished yet!</p>
+                <p>First, you need to <a href="validate/">validate your install and fix any issues.</a></p>
+            </div>
         </div>
     </div>
     <div class="row">
       <div class="col-md-3">
       </div>
       <div class="col-md-6">
-        <div class="alert alert-success">Thank you for setting up LibreNMS.<br />
-        It would be great if you would consider contributing to our statistics, you can do this on the <a href="about/">/about/</a> page and check the box under Statistics.<br />
-        You can now click <a href="/">here to login to your new install.</a></div>
+        <div class="alert alert-success">
+            <p>Thank you for setting up LibreNMS.</p>
+            <p>It would be great if you would consider contributing to our statistics, you can do this on the <a href="about/">About LibreNMS Page</a> and check the box under Statistics.</p>
       </div>
       <div class="col-md-3">
       </div>

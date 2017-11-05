@@ -146,13 +146,20 @@ if (!module_selected('nodb', $init_modules)) {
     require $install_dir . '/includes/process_config.inc.php';
 }
 
-if (file_exists($config['install_dir'] . '/html/includes/authentication/'.$config['auth_mechanism'].'.inc.php')) {
+if (file_exists($install_dir . '/html/includes/authentication/'.$config['auth_mechanism'].'.inc.php')) {
     require_once $install_dir . '/html/includes/authentication/functions.php';
-    require_once $config['install_dir'] . '/html/includes/authentication/'.$config['auth_mechanism'].'.inc.php';
+    require_once $install_dir . '/html/includes/authentication/'.$config['auth_mechanism'].'.inc.php';
     init_auth();
 } else {
     print_error('ERROR: no valid auth_mechanism defined!');
     exit();
+}
+
+if (module_selected('discovery', $init_modules) && !update_os_cache()) {
+    // load_all_os() is called by update_os_cache() if updated, no need to call twice
+    load_all_os();
+} elseif (module_selected('web', $init_modules)) {
+    load_all_os(!module_selected('nodb', $init_modules));
 }
 
 if (module_selected('web', $init_modules)) {
@@ -161,11 +168,6 @@ if (module_selected('web', $init_modules)) {
         $config['title_image'] = 'images/librenms_logo_'.$config['site_style'].'.svg';
     }
     require $install_dir . '/html/includes/vars.inc.php';
-    if (module_selected('nodb', $init_modules)) {
-        load_all_os(false);
-    } else {
-        load_all_os(true);
-    }
 }
 
 $console_color = new Console_Color2();

@@ -22,6 +22,7 @@
 # define DAILY_SCRIPT as the full path to this script and LIBRENMS_DIR as the directory this script is in
 DAILY_SCRIPT=$(readlink -f "$0")
 LIBRENMS_DIR=$(dirname "$DAILY_SCRIPT")
+COMPOSER="php ${LIBRENMS_DIR}/scripts/composer_wrapper.php"
 
 # set log_file, using librenms $config['log_dir'], if set
 # otherwise we default to <LibreNMS Install Directory>/logs
@@ -63,7 +64,7 @@ status_run() {
     echo "${tmp}" >> ${log_file}
     echo "Returned: ${exit_code}" >> ${log_file}
 
-    # print OK if the command ran succesfully
+    # print OK if the command ran successfully
     # or FAIL otherwise (non-zero exit code)
     if [[ "${exit_code}" == "0" ]]; then
         printf " \033[0;32mOK\033[0m\n";
@@ -71,6 +72,10 @@ status_run() {
         printf " \033[0;31mFAIL\033[0m\n";
         if [[ "${arg_option}" == "update" ]]; then
             php "${LIBRENMS_DIR}/daily.php" -f notify -o "${tmp}"
+        fi
+        if [[ ! -z "${tmp}" ]]; then
+            # print output in case of failure
+            echo "${tmp}"
         fi
     fi
     return ${exit_code}
@@ -93,6 +98,25 @@ call_daily_php() {
     for arg in "${args[@]}"; do
         php "${LIBRENMS_DIR}/daily.php" -f "${arg}";
     done
+}
+
+#######################################
+# Send result of a notifiable process to php code for processing
+# Globals:
+#   LIBRENMS_DIR
+# Arguments:
+#   args:
+#        Type: update
+#        Result: 1 for success, 0 for failure
+# Returns:
+#   Exit-Code of Command
+#######################################
+set_notifiable_result() {
+    local args="$@";
+    local arg_type=$1;
+    local arg_result=$2;
+
+    php "${LIBRENMS_DIR}/daily.php" -f handle_notifiable -t ${arg_type} -r ${arg_result};
 }
 
 #######################################
@@ -122,28 +146,53 @@ main () {
         fi
     fi
 
+    # make sure autoload.php exists before trying to run any php that may require it
+    if [ ! -f "${LIBRENMS_DIR}/vendor/autoload.php" ]; then
+        ${COMPOSER} install --no-dev
+    fi
+
     if [[ -z "$arg" ]]; then
+        status_run 'Checking PHP version' "php ${LIBRENMS_DIR}/daily.php -f check_php_ver" 'check_php_ver'
+
         up=$(php daily.php -f update >&2; echo $?)
         if [[ "$up" == "0" ]]; then
-            $DAILY_SCRIPT no-code-update
+            ${DAILY_SCRIPT} no-code-update
+            set_notifiable_result update 1  # make sure there are no update notifications if update is disabled
             exit
-        elif [[ "$up" == "1" ]]; then
+        fi
+
+        # make sure the vendor directory is clean
+        git checkout vendor/ --quiet > /dev/null 2>&1
+
+        update_res=0
+        if [[ "$up" == "1" ]]; then
             # Update to Master-Branch
-            git checkout vendor/ --quiet > /dev/null 2>&1
             old_ver=$(git show --pretty="%H" -s HEAD)
             status_run 'Updating to latest codebase' 'git pull --quiet' 'update'
+            update_res=$?
             new_ver=$(git show --pretty="%H" -s HEAD)
-            if [ "$old_ver" != "$new_ver" ]; then
-                status_run "Updated from $old_ver to $new_ver" ''
-            fi
         elif [[ "$up" == "3" ]]; then
             # Update to last Tag
-            git checkout vendor/ --quiet > /dev/null 2>&1
             old_ver=$(git describe --exact-match --tags $(git log -n1 --pretty='%h'))
             status_run 'Updating to latest release' 'git fetch --tags && git checkout $(git describe --tags $(git rev-list --tags --max-count=1))' 'update'
+            update_res=$?
             new_ver=$(git describe --exact-match --tags $(git log -n1 --pretty='%h'))
-            if [[ "$old_ver" != "$new_ver" ]]; then
+        fi
+
+        if (( $update_res > 0 )); then
+            set_notifiable_result update 0
+        fi
+
+        if [[ "$old_ver" != "$new_ver" ]]; then
+#            status_run 'Updating Composer packages' "${COMPOSER} install --no-dev" 'update'
+
+            # Run post update checks
+            if [ ! -f "${LIBRENMS_DIR}/vendor/autoload.php" ]; then
+                status_run "Reverting update, check the output of composer diagnose" "git checkout $old_ver" 'update'
+                set_notifiable_result update 0
+            else
                 status_run "Updated from $old_ver to $new_ver" ''
+                set_notifiable_result update 1  # only clear the error if update was a success
             fi
         fi
 
@@ -156,7 +205,7 @@ main () {
 
         if [[ -z "$cnf" ]] || [[ "$cnf" == "0" ]] || [[ "$cnf" == "false" ]]; then
             # Call ourself again in case above pull changed or added something to daily.sh
-            $DAILY_SCRIPT post-pull
+            ${DAILY_SCRIPT} post-pull
         fi
     else
         case $arg in
@@ -177,6 +226,7 @@ main () {
             cleanup)
                 # Cleanups
                 local options=("refresh_alert_rules"
+                               "refresh_os_cache"
                                "syslog"
                                "eventlog"
                                "authlog"
